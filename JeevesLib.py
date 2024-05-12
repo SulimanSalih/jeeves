@@ -274,43 +274,68 @@ def jmap(iterable, mapper):
 	iterable = fexpr_cast(iterable).partialEval(jeevesState.pathenv.getEnv())
 	return FObject(JList(jmap2(iterable, mapper)))
 def jmap2(iterator, mapper):
-	if isinstance(iterator, Facet):
-		if jeevesState.pathenv.hasPosVar(iterator.cond):
-			return jmap2(iterator.thn, mapper)
-		if jeevesState.pathenv.hasNegVar(iterator.cond):
-			return jmap2(iterator.els, mapper)
-		with PositiveVariable(iterator.cond):
-			thn = jmap2(iterator.thn, mapper)
-		with NegativeVariable(iterator.cond):
-			els = jmap2(iterator.els, mapper)
-		return Facet(iterator.cond, thn, els)
-	elif isinstance(iterator, FObject):
-		return jmap2(iterator.v, mapper)
-	elif isinstance(iterator, JList):
-		return jmap2(iterator.l, mapper)
-	elif isinstance(iterator, JList2):
-		return jmap2(iterator.convert_to_jlist1().l, mapper)
-	elif isinstance(iterator, list) or isinstance(iterator, tuple):
-		return FObject([mapper(item) for item in iterator])
-	else:
-		return jmap2(iterator.__iter__(), mapper)
+    # Factor out the Facet-specific logic
+    if isinstance(iterator, Facet):
+        return process_facet(iterator, mapper)
+    
+    # Handle other types by mapping directly or recursively
+    return process_non_facet_types(iterator, mapper)
+
+def process_facet(iterator, mapper):
+    # Simplify facet handling by using early returns
+    if jeevesState.pathenv.hasPosVar(iterator.cond):
+        return jmap2(iterator.thn, mapper)
+    elif jeevesState.pathenv.hasNegVar(iterator.cond):
+        return jmap2(iterator.els, mapper)
+    else:
+        with PositiveVariable(iterator.cond):
+            thn = jmap2(iterator.thn, mapper)
+        with NegativeVariable(iterator.cond):
+            els = jmap2(iterator.els, mapper)
+        return Facet(iterator.cond, thn, els)
+
+def process_non_facet_types(iterator, mapper):
+    if isinstance(iterator, FObject):
+        return jmap2(iterator.v, mapper)
+    elif isinstance(iterator, (JList, JList2)):
+        return handle_jlist_types(iterator, mapper)
+    elif isinstance(iterator, (list, tuple)):
+        return FObject([mapper(item) for item in iterator])
+    else:
+        return jmap2(iterator.__iter__(), mapper)
+
+def handle_jlist_types(iterator, mapper):
+    if isinstance(iterator, JList):
+        return jmap2(iterator.l, mapper)
+    elif isinstance(iterator, JList2):
+        return jmap2(iterator.convert_to_jlist1().l, mapper)
+
 
 def jmap_jlist2(jlist2, mapper):
-	ans = JList2([])
-	env = jeevesState.pathenv.getEnv()
-	for i, e in jlist2.l:
-		popcount = 0
-		for vname, vval in e.iteritems():
-			if vname not in env:
-				v = getLabel(vname)
-				jeevesState.pathenv.push(v, vval)
-				popcount += 1
-			elif env[vname] != vval:
-				break
-			ans.l.append((mapper(i), e))
-		for _ in xrange(popcount):
-			jeevesState.pathenv.pop()
-	return FObject(ans)
+    ans = JList2([])
+    env = jeevesState.pathenv.getEnv()
+
+    def update_environment(vname, vval):
+        if vname not in env or env[vname] != vval:
+            if vname not in env:
+                v = getLabel(vname)
+                jeevesState.pathenv.push(v, vval)
+                return 1  # Return 1 to indicate an item was pushed to the environment stack
+        return 0  # Return 0 to indicate no change to the environment stack
+
+    for i, e in jlist2.l:
+        popcount = sum(update_environment(vname, vval) for vname, vval in e.items())
+        
+        # Only append to result if all environment updates were successful (i.e., no breaks occurred)
+        if popcount == len(e):
+            ans.l.append((mapper(i), e))
+        
+        # Restore the original environment by popping all changes
+        for _ in range(popcount):
+            jeevesState.pathenv.pop()
+
+    return FObject(ans)
+
 
 def facetMapper(facet, fn, wrapper=fexpr_cast):
 	if isinstance(facet, Facet):
@@ -377,18 +402,17 @@ class JList2:
 
 	def convert_to_jlist1(self):
 		all_vars = [v.name for v in self.vars()]
+
 		def rec(cur_e, i):
 			if i == len(all_vars):
-				return FObject(
-					[i for i,e in self.l if all(cur_e[v] == e[v] for v in e)])
-			else:
-				cur_e1 = dict(cur_e)
-				cur_e2 = dict(cur_e)
-				cur_e1[all_vars[i]] = True
-				cur_e2[all_vars[i]] = False
-				return Facet(getLabel(all_vars[i]),
-					rec(cur_e1, i+1), rec(cur_e2, i+1))
+				return FObject([i for i, e in self.l if all(cur_e[v] == e[v] for v in e)])
+			cur_e1, cur_e2 = dict(cur_e), dict(cur_e)
+			cur_e1[all_vars[i]], cur_e2[all_vars[i]] = True, False
+			return Facet(getLabel(all_vars[i]), rec(cur_e1, i+1), rec(cur_e2, i+1))
+
 		return JList(rec({}, 0))
+
+
 
 	def __getitem__(self, i):
 		return self.convert_to_jlist1().__getitem__(i)
@@ -398,6 +422,48 @@ class JList2:
 
 	def __len__(self):
 		return self.convert_to_jlist1().__len__()
+class JFunState:
+    def __init__(self, f, args, kw):
+        self.f = f
+        self.args = args
+        self.kw = kw
+        self.args_concrete = []
+        self.i = 0
+
+    def eval(self, arg):
+        if isinstance(arg, (Constant, FObject)):
+            env = jeevesState.pathenv.getEnv()
+            if self.i < len(self.args) - 1:
+                self.args_concrete.append(arg.v)
+                self.i += 1
+                return self.eval(fexpr_cast(self.args[self.i]).partialEval(env))
+            else:
+                return self.final_eval(arg)
+        else:
+            return self.eval_facet(arg)
+
+    def final_eval(self, arg):
+        self.args_concrete.append(arg.v)
+        it = iter(self.kw)
+        try:
+            fst = next(it)
+            return self.jfun3(it, fst)
+        except StopIteration:
+            return fexpr_cast(self.f(*self.args_concrete))
+
+    def jfun3(self, it, fst):
+        env = jeevesState.pathenv.getEnv()
+        fst_val = fexpr_cast(self.kw[fst]).partialEval(env)
+        self.args_concrete.append(fst_val)
+        return jfun3(self.f, self.kw, it, fst, fst_val, self.args_concrete, {})
+
+    def eval_facet(self, arg):
+        with PositiveVariable(arg.cond):
+            thn = self.eval(arg.thn)
+        with NegativeVariable(arg.cond):
+            els = self.eval(arg.els)
+        return Facet(arg.cond, thn, els)
+
 
 class JIterator:
 	def __init__(self, l):
@@ -405,63 +471,38 @@ class JIterator:
 
 @supports_jeeves
 def jfun(f, *args, **kw):
-	if hasattr(f, '__jeeves'):
-		return f(*args, **kw)
-	else:
-		env = jeevesState.pathenv.getEnv()
-		if len(args) > 0:
-			return jfun2(
-				f, args, kw, 0, fexpr_cast(args[0]).partialEval(env), [])
-		else:
-			it = kw.__iter__()
-			try:
-				fst = next(it)
-			except StopIteration:
-				return fexpr_cast(f())
-			return jfun3(
-				f, kw, it, fst, fexpr_cast(kw[fst]).partialEval(env), (), {})
+    if hasattr(f, '__jeeves'):
+        return f(*args, **kw)
 
-def jfun2(f, args, kw, i, arg, args_concrete):
-	if isinstance(arg, Constant) or isinstance(arg, FObject):
-		env = jeevesState.pathenv.getEnv()
-		if i < len(args) - 1:
-			return jfun2(f, args, kw, i+1
-				, fexpr_cast(args[i+1]).partialEval(env)
-				, tuple(list(args_concrete) + [arg.v]))
-		else:
-			it = kw.__iter__()
-			try:
-				fst = next(it)
-			except StopIteration:
-				return fexpr_cast(f(*tuple(list(args_concrete) + [arg.v])))
-			return jfun3(f, kw, it, fst, fexpr_cast(kw[fst]).partialEval(env)
-				, tuple(list(args_concrete) + [arg.v]), {})
-	else:
-		with PositiveVariable(arg.cond):
-			thn = jfun2(f, args, kw, i, arg.thn, args_concrete)
-		with NegativeVariable(arg.cond):
-			els = jfun2(f, args, kw, i, arg.els, args_concrete)
-		return Facet(arg.cond, thn, els)
+    env = jeevesState.pathenv.getEnv()
+    if args:
+        return handle_positional_args(f, args, kw, env)
+    else:
+        return handle_keyword_args(f, kw, env)
 
-from itertools import tee
-def jfun3(f, kw, it, key, val, args_concrete, kw_concrete):
-		if isinstance(val, Constant) or isinstance(val, FObject):
-				kw_c = dict(kw_concrete)
-				kw_c[key] = val.v
-				try:
-						next_key = next(it)
-				except StopIteration:
-						return fexpr_cast(f(*args_concrete, **kw_c))
-				env = jeevesState.pathenv.getEnv()
-				return jfun3(f, kw, it, next_key
-						, fexpr_cast(kw[next_key]).partialEval(env), args_concrete, kw_c)
-		else:
-				it1, it2 = tee(it)
-				with PositiveVariable(val.cond):
-						thn = jfun3(f, kw, it1, key, val.thn, args_concrete, kw_concrete)
-				with NegativeVariable(val.cond):
-						els = jfun3(f, kw, it2, key, val.els, args_concrete, kw_concrete)
-				return Facet(val.cond, thn, els)
+def handle_positional_args(f, args, kw, env):
+    first_arg_evaluated = fexpr_cast(args[0]).partialEval(env)
+    return jfun2(f, args, kw, 0, first_arg_evaluated, [])
+
+def handle_keyword_args(f, kw, env):
+    it = iter(kw)
+    try:
+        fst = next(it)
+        fst_arg_evaluated = fexpr_cast(kw[fst]).partialEval(env)
+        return jfun3(f, kw, it, fst, fst_arg_evaluated, (), {})
+    except StopIteration:
+        return fexpr_cast(f())
+
+def jfun2(f, args, kw):
+    state = JFunState(f, args, kw)
+    return state.eval(fexpr_cast(args[0]).partialEval(jeevesState.pathenv.getEnv()))
+
+
+# from itertools import tee
+def jfun3(f, args, kw):
+    state = JFun3State(f, args, kw)
+    first_key, first_val = next(state.it), fexpr_cast(kw[next(state.it)]).partialEval(jeevesState.pathenv.getEnv())
+    return state.eval(first_key, first_val)
 
 def evalToConcrete(f):
 	g = fexpr_cast(f).partialEval(jeevesState.pathenv.getEnv())
