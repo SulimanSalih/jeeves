@@ -249,75 +249,75 @@ class Namespace:
 								attr, Unassigned("variable '%s' in %s" % \
 									(attr, self._jeeves_funcname)))
 								, value, self.__dict__['_jeeves_base_env'])
-
-@supports_jeeves
-def jgetattr(obj, attr):
-	if isinstance(obj, FExpr):
-		return getattr(obj, attr)
-	else:
-		return getattr(obj, attr) if hasattr(obj, attr) else Unassigned("attribute '%s'" % attr)
-
-@supports_jeeves
-def jgetitem(obj, item):
-	try:
-		return obj[item]
-	except (KeyError, KeyError, TypeError) as e:
-		return Unassigned("item '%s'" % attr)
-
-@supports_jeeves
-def jmap(iterable, mapper):
-	if isinstance(iterable, JList2):
-		return jmap_jlist2(iterable, mapper)
-	if isinstance(iterable, FObject) and isinstance(iterable.v, JList2):
-		return jmap_jlist2(iterable.v, mapper)
-
-	iterable = fexpr_cast(iterable).partialEval(jeevesState.pathenv.getEnv())
-	return FObject(JList(jmap2(iterable, mapper)))
-def jmap2(iterator, mapper):
-	if isinstance(iterator, Facet):
-		if jeevesState.pathenv.hasPosVar(iterator.cond):
-			return jmap2(iterator.thn, mapper)
-		if jeevesState.pathenv.hasNegVar(iterator.cond):
-			return jmap2(iterator.els, mapper)
-		with PositiveVariable(iterator.cond):
-			thn = jmap2(iterator.thn, mapper)
-		with NegativeVariable(iterator.cond):
-			els = jmap2(iterator.els, mapper)
-		return Facet(iterator.cond, thn, els)
-	elif isinstance(iterator, FObject):
-		return jmap2(iterator.v, mapper)
-	elif isinstance(iterator, JList):
-		return jmap2(iterator.l, mapper)
-	elif isinstance(iterator, JList2):
-		return jmap2(iterator.convert_to_jlist1().l, mapper)
-	elif isinstance(iterator, list) or isinstance(iterator, tuple):
-		return FObject([mapper(item) for item in iterator])
-	else:
-		return jmap2(iterator.__iter__(), mapper)
-
-def jmap_jlist2(jlist2, mapper):
-	ans = JList2([])
-	env = jeevesState.pathenv.getEnv()
-	for i, e in jlist2.l:
-		popcount = 0
-		for vname, vval in e.iteritems():
-			if vname not in env:
-				v = getLabel(vname)
-				jeevesState.pathenv.push(v, vval)
-				popcount += 1
-			elif env[vname] != vval:
-				break
-			ans.l.append((mapper(i), e))
-		for _ in xrange(popcount):
-			jeevesState.pathenv.pop()
-	return FObject(ans)
-
-def facetMapper(facet, fn, wrapper=fexpr_cast):
-	if isinstance(facet, Facet):
-		return Facet(facet.cond, facetMapper(facet.thn, fn, wrapper)
-			, facetMapper(facet.els, fn, wrapper))
-	elif isinstance(facet, Constant) or isinstance(facet, FObject):
-		return wrapper(fn(facet.v))
+	
+	@supports_jeeves
+	def jgetattr(obj, attr):
+		if isinstance(obj, FExpr):
+			return getattr(obj, attr)
+		else:
+			return getattr(obj, attr) if hasattr(obj, attr) else Unassigned("attribute '%s'" % attr)
+	
+	@supports_jeeves
+	def jgetitem(obj, item):
+		try:
+			return obj[item]
+		except (KeyError, KeyError, TypeError) as e:
+			return Unassigned("item '%s'" % attr)
+	
+	@supports_jeeves
+	def jmap(iterable, mapper):
+		if isinstance(iterable, JList2):
+			return jmap_jlist2(iterable, mapper)
+		if isinstance(iterable, FObject) and isinstance(iterable.v, JList2):
+			return jmap_jlist2(iterable.v, mapper)
+	
+		iterable = fexpr_cast(iterable).partialEval(jeevesState.pathenv.getEnv())
+		return FObject(JList(jmap2(iterable, mapper)))
+	def jmap2(iterator, mapper):
+		if isinstance(iterator, Facet):
+			if jeevesState.pathenv.hasPosVar(iterator.cond):
+				return jmap2(iterator.thn, mapper)
+			if jeevesState.pathenv.hasNegVar(iterator.cond):
+				return jmap2(iterator.els, mapper)
+			with PositiveVariable(iterator.cond):
+				thn = jmap2(iterator.thn, mapper)
+			with NegativeVariable(iterator.cond):
+				els = jmap2(iterator.els, mapper)
+			return Facet(iterator.cond, thn, els)
+		elif isinstance(iterator, FObject):
+			return jmap2(iterator.v, mapper)
+		elif isinstance(iterator, JList):
+			return jmap2(iterator.l, mapper)
+		elif isinstance(iterator, JList2):
+			return jmap2(iterator.convert_to_jlist1().l, mapper)
+		elif isinstance(iterator, list) or isinstance(iterator, tuple):
+			return FObject([mapper(item) for item in iterator])
+		else:
+			return jmap2(iterator.__iter__(), mapper)
+	
+	def jmap_jlist2(jlist2, mapper):
+		ans = JList2([])
+		env = jeevesState.pathenv.getEnv()
+		for i, e in jlist2.l:
+			popcount = 0
+			for vname, vval in e.iteritems():
+				if vname not in env:
+					v = getLabel(vname)
+					jeevesState.pathenv.push(v, vval)
+					popcount += 1
+				elif env[vname] != vval:
+					break
+				ans.l.append((mapper(i), e))
+			for _ in xrange(popcount):
+				jeevesState.pathenv.pop()
+		return FObject(ans)
+	
+	def facetMapper(facet, fn, wrapper=fexpr_cast):
+		if isinstance(facet, Facet):
+			return Facet(facet.cond, facetMapper(facet.thn, fn, wrapper)
+				, facetMapper(facet.els, fn, wrapper))
+		elif isinstance(facet, Constant) or isinstance(facet, FObject):
+			return wrapper(fn(facet.v))
 
 class JList:
 	def validate(self):
